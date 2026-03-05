@@ -1,0 +1,27 @@
+{
+    "name": "ar-maintenance-poc",
+    "version": "1.0.0",
+    "description": "AR Maintenance System POC — Android app wrapping PWA with QR scan, MQTT, ServiceNow",
+    "private": true,
+    "scripts": {
+        "sync": "cap sync android",
+        "open": "cap open android",
+        "build": "cap sync android"
+    },
+    "dependencies": {
+        "@capacitor/android": "^6.0.0",
+        "@capacitor/core": "^6.0.0"
+    },
+    "devDependencies": {
+        "@capacitor/cli": "^6.0.0"
+    },
+    "keywords": [
+        "AR",
+        "maintenance",
+        "IoT",
+        "MQTT",
+        "android"
+    ],
+    "author": "AR Maintenance Team",
+    "license": "MIT"
+}

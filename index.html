@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0d1117">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>AR Maintenance System</title>
+<link rel="manifest" href="manifest.json">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #e6edf3; overflow: hidden; height: 100vh; width: 100vw; }
+
+  /* --- CAMERA LAYER --- */
+  #camera-container { position: fixed; inset: 0; z-index: 0; }
+  #camera { width: 100%; height: 100%; object-fit: cover; }
+  #scan-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: none; }
+
+  /* --- OVERLAY LAYER --- */
+  #ar-overlay { position: fixed; inset: 0; z-index: 10; pointer-events: none; }
+
+  /* --- SCANNER VIEWFINDER --- */
+  #viewfinder {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: 250px; height: 250px; z-index: 20; pointer-events: none;
+  }
+  .vf-corner {
+    position: absolute; width: 30px; height: 30px;
+    border-color: #00d4ff; border-style: solid;
+  }
+  .vf-corner.tl { top: 0; left: 0; border-width: 3px 0 0 3px; }
+  .vf-corner.tr { top: 0; right: 0; border-width: 3px 3px 0 0; }
+  .vf-corner.bl { bottom: 0; left: 0; border-width: 0 0 3px 3px; }
+  .vf-corner.br { bottom: 0; right: 0; border-width: 0 3px 3px 0; }
+  #scan-line {
+    position: absolute; left: 4px; right: 4px; height: 2px;
+    background: linear-gradient(90deg, transparent, #00d4ff, transparent);
+    animation: scanline 2s linear infinite;
+  }
+  @keyframes scanline { 0% { top: 4px; } 100% { top: calc(100% - 6px); } }
+
+  /* --- STATUS BAR --- */
+  #status-bar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 30;
+    background: rgba(13,17,23,0.85); backdrop-filter: blur(12px);
+    padding: 12px 16px; display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid rgba(0,212,255,0.2);
+  }
+  #app-title { font-size: 15px; font-weight: 700; color: #00d4ff; letter-spacing: 1px; text-transform: uppercase; }
+  #connection-badge {
+    display: flex; align-items: center; gap: 6px; font-size: 12px;
+  }
+  #conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #ff4444; transition: background 0.3s; }
+  #conn-dot.connected { background: #00cc66; }
+  #conn-dot.simulating { background: #ffaa00; }
+
+  /* --- BOTTOM SCAN PROMPT --- */
+  #scan-prompt {
+    position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%);
+    z-index: 30; text-align: center; color: rgba(255,255,255,0.7);
+    animation: pulse-opacity 2s ease-in-out infinite;
+  }
+  @keyframes pulse-opacity { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
+  #scan-prompt .icon { font-size: 32px; margin-bottom: 6px; }
+  #scan-prompt .text { font-size: 14px; letter-spacing: 0.5px; }
+
+  /* --- TELEMETRY CARD --- */
+  #telemetry-card {
+    position: fixed; top: 80px; left: 16px; right: 16px; z-index: 30;
+    background: rgba(13,17,23,0.9); backdrop-filter: blur(16px);
+    border: 1px solid rgba(0,212,255,0.3); border-radius: 16px;
+    padding: 16px; display: none;
+    animation: slideIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  @keyframes slideIn { from { opacity: 0; transform: translateY(-20px) scale(0.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+  #asset-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  #asset-id { font-size: 18px; font-weight: 700; color: #00d4ff; }
+  #asset-status { padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; letter-spacing: 1px; }
+  #asset-status.ok { background: rgba(0,204,102,0.2); color: #00cc66; border: 1px solid #00cc66; }
+  #asset-status.warn { background: rgba(255,170,0,0.2); color: #ffaa00; border: 1px solid #ffaa00; }
+  #asset-status.crit { background: rgba(255,68,68,0.2); color: #ff4444; border: 1px solid #ff4444; }
+
+  .metrics-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+  .metric-box {
+    background: rgba(255,255,255,0.05); border-radius: 10px; padding: 10px;
+    text-align: center; position: relative; overflow: hidden;
+  }
+  .metric-box::before {
+    content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 2px;
+    background: var(--metric-color, #00d4ff);
+  }
+  .metric-label { font-size: 10px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .metric-value { font-size: 20px; font-weight: 700; color: var(--metric-color, #e6edf3); }
+  .metric-unit { font-size: 11px; color: rgba(255,255,255,0.4); margin-top: 2px; }
+
+  #uptime-bar { font-size: 12px; color: rgba(255,255,255,0.5); margin-bottom: 14px; display: flex; align-items: center; gap: 6px; }
+  #uptime-val { color: #a5d6ff; font-weight: 600; }
+  #timestamp-val { margin-left: auto; font-size: 10px; }
+
+  /* --- ACTION BUTTONS --- */
+  .action-row { display: flex; gap: 10px; }
+  .action-btn {
+    flex: 1; padding: 12px; border-radius: 10px; border: none;
+    font-size: 13px; font-weight: 600; cursor: pointer; letter-spacing: 0.5px;
+    transition: transform 0.15s, box-shadow 0.15s; pointer-events: all;
+  }
+  .action-btn:active { transform: scale(0.97); }
+  .btn-ticket { background: linear-gradient(135deg, #0047ab, #0064d4); color: white; }
+  .btn-history { background: rgba(255,255,255,0.08); color: #e6edf3; border: 1px solid rgba(255,255,255,0.15); }
+  .btn-close { background: rgba(255,68,68,0.15); color: #ff4444; border: 1px solid rgba(255,68,68,0.3); }
+
+  /* --- HISTORY PANEL --- */
+  #history-panel {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 40;
+    background: rgba(13,17,23,0.97); backdrop-filter: blur(20px);
+    border-top: 1px solid rgba(0,212,255,0.2); border-radius: 20px 20px 0 0;
+    padding: 16px; max-height: 55vh; overflow-y: auto; display: none;
+    animation: slideUp 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  #history-title { font-size: 15px; font-weight: 700; margin-bottom: 12px; color: #00d4ff; display: flex; justify-content: space-between; }
+  .history-row {
+    display: grid; grid-template-columns: auto 1fr 1fr 1fr auto;
+    gap: 8px; padding: 10px; border-radius: 8px; margin-bottom: 6px;
+    background: rgba(255,255,255,0.04); font-size: 12px; align-items: center;
+  }
+  .hist-time { color: rgba(255,255,255,0.4); font-size: 10px; }
+  .hist-val { font-weight: 600; }
+  .hist-status { padding: 2px 6px; border-radius: 4px; font-size: 10px; text-align: center; }
+
+  /* --- SETUP PANEL --- */
+  #setup-btn {
+    position: fixed; bottom: 20px; right: 16px; z-index: 30;
+    background: rgba(13,17,23,0.8); border: 1px solid rgba(255,255,255,0.15);
+    color: rgba(255,255,255,0.6); border-radius: 50%; width: 44px; height: 44px;
+    font-size: 20px; cursor: pointer; backdrop-filter: blur(10px);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #setup-panel {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 50;
+    background: #161b22; border-top: 1px solid rgba(255,255,255,0.1);
+    border-radius: 20px 20px 0 0; padding: 20px; display: none;
+    animation: slideUp 0.35s ease;
+  }
+  #setup-panel h2 { font-size: 16px; margin-bottom: 16px; color: #00d4ff; }
+  .setup-field { margin-bottom: 12px; }
+  .setup-field label { font-size: 12px; color: rgba(255,255,255,0.5); margin-bottom: 4px; display: block; }
+  .setup-field input {
+    width: 100%; padding: 10px 12px; background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; color: #e6edf3;
+    font-size: 14px;
+  }
+  .setup-toggle { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .toggle-switch { width: 44px; height: 24px; background: rgba(255,255,255,0.1); border-radius: 12px; position: relative; cursor: pointer; transition: background 0.3s; }
+  .toggle-switch.on { background: #00d4ff; }
+  .toggle-knob { position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; background: white; border-radius: 50%; transition: left 0.3s; }
+  .toggle-switch.on .toggle-knob { left: 22px; }
+  .btn-save { width: 100%; padding: 12px; background: #00d4ff; color: #0d1117; border: none; border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer; margin-top: 4px; }
+
+  /* --- NOTIFICATION TOAST --- */
+  #toast {
+    position: fixed; top: 80px; left: 50%; transform: translateX(-50%); z-index: 60;
+    background: rgba(0,204,102,0.9); color: white; padding: 10px 20px; border-radius: 20px;
+    font-size: 13px; font-weight: 600; pointer-events: none; transition: opacity 0.4s;
+    white-space: nowrap;
+  }
+  #toast.error { background: rgba(255,68,68,0.9); }
+  #toast.info { background: rgba(0,100,212,0.9); }
+  #toast.hidden { opacity: 0; }
+
+  /* --- BOTTOM NAV --- */
+  #bottom-nav {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
+    background: rgba(13,17,23,0.9); backdrop-filter: blur(12px);
+    border-top: 1px solid rgba(255,255,255,0.08);
+    display: flex; padding: 8px 0 max(8px, env(safe-area-inset-bottom));
+  }
+  .nav-btn {
+    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+    background: none; border: none; color: rgba(255,255,255,0.4); cursor: pointer; padding: 6px;
+    font-size: 10px; transition: color 0.2s;
+  }
+  .nav-btn.active { color: #00d4ff; }
+  .nav-btn .icon { font-size: 22px; }
+
+  /* --- SIM MODE BADGE --- */
+  #sim-badge {
+    position: fixed; top: 60px; right: 10px; z-index: 25;
+    background: rgba(255,170,0,0.15); border: 1px solid rgba(255,170,0,0.4);
+    color: #ffaa00; font-size: 10px; padding: 3px 8px; border-radius: 10px;
+    letter-spacing: 0.5px; display: none;
+  }
+</style>
+</head>
+<body>
+
+<!-- CAMERA -->
+<div id="camera-container">
+  <video id="camera" autoplay muted playsinline></video>
+  <canvas id="scan-canvas"></canvas>
+</div>
+
+<!-- AR OVERLAY (info boxes drawn here later) -->
+<div id="ar-overlay"></div>
+
+<!-- SCANNER VIEWFINDER -->
+<div id="viewfinder">
+  <div class="vf-corner tl"></div>
+  <div class="vf-corner tr"></div>
+  <div class="vf-corner bl"></div>
+  <div class="vf-corner br"></div>
+  <div id="scan-line"></div>
+</div>
+
+<!-- STATUS BAR -->
+<div id="status-bar">
+  <div id="app-title">AR Maintenance</div>
+  <div id="connection-badge">
+    <div id="conn-dot"></div>
+    <span id="conn-label">Disconnected</span>
+  </div>
+</div>
+
+<div id="sim-badge">SIM MODE</div>
+
+<!-- SCAN PROMPT -->
+<div id="scan-prompt">
+  <div class="icon">📷</div>
+  <div class="text">Point camera at asset QR code</div>
+</div>
+
+<!-- TELEMETRY CARD -->
+<div id="telemetry-card">
+  <div id="asset-header">
+    <div id="asset-id">ASSET</div>
+    <div id="asset-status" class="ok">OK</div>
+  </div>
+  <div class="metrics-grid">
+    <div class="metric-box" style="--metric-color:#ff6b6b">
+      <div class="metric-label">CPU Temp</div>
+      <div class="metric-value" id="m-temp">--</div>
+      <div class="metric-unit">°C</div>
+    </div>
+    <div class="metric-box" style="--metric-color:#ffd93d">
+      <div class="metric-label">CPU Load</div>
+      <div class="metric-value" id="m-load">--</div>
+      <div class="metric-unit">%</div>
+    </div>
+    <div class="metric-box" style="--metric-color:#6bcb77">
+      <div class="metric-label">Signal</div>
+      <div class="metric-value" id="m-signal">--</div>
+      <div class="metric-unit">dBm</div>
+    </div>
+  </div>
+  <div id="uptime-bar">
+    <span>⏱ Uptime:</span>
+    <span id="uptime-val">--</span>
+    <span id="timestamp-val">--</span>
+  </div>
+  <div class="action-row">
+    <button class="action-btn btn-ticket" onclick="createTicket()">🎫 Create Ticket</button>
+    <button class="action-btn btn-history" onclick="showHistory()">📊 History</button>
+    <button class="action-btn btn-close" onclick="clearAsset()">✕</button>
+  </div>
+</div>
+
+<!-- HISTORY PANEL -->
+<div id="history-panel">
+  <div id="history-title">
+    <span>📈 Telemetry History</span>
+    <span onclick="closeHistory()" style="cursor:pointer;color:rgba(255,255,255,0.4);">✕</span>
+  </div>
+  <div id="history-rows"></div>
+</div>
+
+<!-- TOAST -->
+<div id="toast" class="hidden">Message</div>
+
+<!-- SETUP BUTTON -->
+<button id="setup-btn" onclick="toggleSetup()">⚙️</button>
+
+<!-- SETUP PANEL -->
+<div id="setup-panel">
+  <h2>⚙️ Configuration</h2>
+  <div class="setup-toggle">
+    <div>
+      <div style="font-size:14px;font-weight:600;">Simulation Mode</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.4);">Generate fake telemetry data</div>
+    </div>
+    <div class="toggle-switch" id="sim-toggle" onclick="toggleSim()">
+      <div class="toggle-knob"></div>
+    </div>
+  </div>
+  <div class="setup-field" id="mqtt-field">
+    <label>MQTT Broker (WebSocket)</label>
+    <input type="text" id="mqtt-url" placeholder="ws://192.168.1.100:9001" />
+  </div>
+  <div class="setup-field">
+    <label>ServiceNow Instance URL</label>
+    <input type="text" id="snow-url" placeholder="https://devXXXXXX.service-now.com" />
+  </div>
+  <div class="setup-field">
+    <label>ServiceNow User / Password</label>
+    <input type="text" id="snow-user" placeholder="admin" style="margin-bottom:6px;" />
+    <input type="password" id="snow-pass" placeholder="password" />
+  </div>
+  <button class="btn-save" onclick="saveConfig()">Save &amp; Connect</button>
+  <button class="btn-save" style="background:rgba(255,255,255,0.08);color:#e6edf3;margin-top:8px;" onclick="closeSetup()">Cancel</button>
+</div>
+
+<!-- BOTTOM NAV -->
+<div id="bottom-nav">
+  <button class="nav-btn active" id="nav-scan">
+    <span class="icon">📷</span>Scan
+  </button>
+  <button class="nav-btn" id="nav-assets" onclick="showToast('Feature coming in v2','info')">
+    <span class="icon">🖥️</span>Assets
+  </button>
+  <button class="nav-btn" id="nav-tickets" onclick="showToast('Opens ServiceNow','info')">
+    <span class="icon">🎫</span>Tickets
+  </button>
+</div>
+
+<script>
+// ============================================================
+// CONFIGURATION
+// ============================================================
+const CONFIG = {
+  simMode: true,
+  mqttUrl: '',
+  snowUrl: '',
+  snowUser: 'admin',
+  snowPass: ''
+};
+
+// ============================================================
+// STATE
+// ============================================================
+let mqttClient = null;
+let currentAsset = null;
+let scanning = false;
+let scanInterval = null;
+let simInterval = null;
+let historyData = [];
+const MAX_HISTORY = 20;
+
+// ============================================================
+// INIT
+// ============================================================
+document.addEventListener('DOMContentLoaded', () => {
+  loadConfig();
+  startCamera();
+  updateConnectionUI();
+  if (CONFIG.simMode) startSimMode();
+});
+
+// ============================================================
+// CAMERA & QR SCANNING
+// ============================================================
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+    });
+    const video = document.getElementById('camera');
+    video.srcObject = stream;
+    video.onloadedmetadata = () => { startQRScan(); };
+  } catch (e) {
+    showToast('Camera permission denied. Enable in Settings.', 'error');
+    // Fallback: allow manual QR input
+    setTimeout(() => promptManualQR(), 2000);
+  }
+}
+
+function startQRScan() {
+  if (scanning) return;
+  scanning = true;
+  const video = document.getElementById('camera');
+  const canvas = document.getElementById('scan-canvas');
+  const ctx = canvas.getContext('2d');
+  scanInterval = setInterval(() => {
+    if (currentAsset) return; // Don't scan if asset already loaded
+    if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
+    if (code) processQRCode(code.data);
+  }, 200);
+}
+
+function processQRCode(data) {
+  // Expected format: ASSET:RACK-01:it/assets/RACK-01/telemetry
+  // Also accept simple: RACK-01
+  let assetId, topic;
+  if (data.startsWith('ASSET:')) {
+    const parts = data.split(':');
+    assetId = parts[1];
+    topic = parts.slice(2).join(':');
+  } else {
+    assetId = data.trim();
+    topic = `it/assets/${assetId}/telemetry`;
+  }
+  if (!assetId) return;
+  loadAsset(assetId, topic);
+}
+
+function promptManualQR() {
+  const val = prompt('Enter Asset ID (e.g. RACK-01) or full QR text:');
+  if (val) processQRCode(val);
+}
+
+// ============================================================
+// ASSET LOADING
+// ============================================================
+function loadAsset(assetId, topic) {
+  currentAsset = { id: assetId, topic };
+  historyData = [];
+  document.getElementById('asset-id').textContent = assetId;
+  document.getElementById('scan-prompt').style.display = 'none';
+  document.getElementById('viewfinder').style.display = 'none';
+  document.getElementById('telemetry-card').style.display = 'block';
+  showToast(`Asset ${assetId} identified ✓`, 'success');
+
+  if (CONFIG.simMode) {
+    startSimForAsset(assetId);
+  } else {
+    connectMQTT(topic);
+  }
+}
+
+function clearAsset() {
+  currentAsset = null;
+  if (mqttClient) { try { mqttClient.end(); } catch(e) {} mqttClient = null; }
+  if (simInterval) { clearInterval(simInterval); simInterval = null; }
+  document.getElementById('telemetry-card').style.display = 'none';
+  document.getElementById('history-panel').style.display = 'none';
+  document.getElementById('scan-prompt').style.display = 'block';
+  document.getElementById('viewfinder').style.display = 'block';
+  updateConnectionUI();
+}
+
+// ============================================================
+// SIMULATION MODE
+// ============================================================
+function startSimMode() {
+  document.getElementById('sim-badge').style.display = 'block';
+  document.getElementById('conn-dot').className = 'simulating';
+  document.getElementById('conn-label').textContent = 'Simulation';
+}
+
+function startSimForAsset(assetId) {
+  if (simInterval) clearInterval(simInterval);
+  const update = () => {
+    const temp = (40 + Math.random() * 20).toFixed(1);
+    const load = Math.round(50 + Math.random() * 40);
+    const signal = Math.round(-70 + Math.random() * 20);
+    const uptime = Math.round(1000 + Math.random() * 500);
+    const status = temp > 58 ? 'CRIT' : temp > 52 ? 'WARN' : 'OK';
+    updateTelemetry({ asset_id: assetId, cpu_temp: temp, cpu_load: load, signal_dbm: signal, uptime_hrs: uptime, status, timestamp: new Date().toISOString() });
+  };
+  update();
+  simInterval = setInterval(update, 5000);
+}
+
+// ============================================================
+// MQTT
+// ============================================================
+function connectMQTT(topic) {
+  if (!CONFIG.mqttUrl) { showToast('Set MQTT broker URL in Settings', 'error'); return; }
+  try {
+    mqttClient = mqtt.connect(CONFIG.mqttUrl, { reconnectPeriod: 5000, connectTimeout: 10000 });
+    mqttClient.on('connect', () => {
+      document.getElementById('conn-dot').className = 'connected';
+      document.getElementById('conn-label').textContent = 'MQTT Live';
+      mqttClient.subscribe(topic);
+      showToast('Connected to MQTT broker', 'success');
+    });
+    mqttClient.on('message', (t, payload) => {
+      try { updateTelemetry(JSON.parse(payload.toString())); } catch(e) {}
+    });
+    mqttClient.on('error', (e) => { showToast('MQTT error: ' + e.message, 'error'); });
+    mqttClient.on('close', () => { document.getElementById('conn-dot').className = ''; document.getElementById('conn-label').textContent = 'Disconnected'; });
+  } catch(e) { showToast('MQTT connect failed', 'error'); }
+}
+
+// ============================================================
+// TELEMETRY UPDATE
+// ============================================================
+function updateTelemetry(data) {
+  const temp = parseFloat(data.cpu_temp || data.temp || 0);
+  const load = parseInt(data.cpu_load || data.load || 0);
+  const signal = parseInt(data.signal_dbm || data.signal || -75);
+  const uptime = data.uptime_hrs || '--';
+  const status = data.status || (temp > 58 ? 'CRIT' : temp > 52 ? 'WARN' : 'OK');
+  const ts = data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+
+  document.getElementById('m-temp').textContent = temp.toFixed(1);
+  document.getElementById('m-load').textContent = load;
+  document.getElementById('m-signal').textContent = signal;
+  document.getElementById('uptime-val').textContent = `${uptime} hrs`;
+  document.getElementById('timestamp-val').textContent = ts;
+
+  const statusEl = document.getElementById('asset-status');
+  statusEl.textContent = status;
+  statusEl.className = 'asset-status ' + (status === 'CRIT' ? 'crit' : status === 'WARN' ? 'warn' : 'ok');
+
+  // Change temp metric color based on value
+  const tempBox = document.getElementById('m-temp').closest('.metric-box');
+  tempBox.style.setProperty('--metric-color', temp > 58 ? '#ff4444' : temp > 52 ? '#ffaa00' : '#ff6b6b');
+
+  // Store in history
+  historyData.unshift({ ts, temp, load, signal, status });
+  if (historyData.length > MAX_HISTORY) historyData.pop();
+}
+
+// ============================================================
+// HISTORY PANEL
+// ============================================================
+function showHistory() {
+  const panel = document.getElementById('history-panel');
+  const rows = document.getElementById('history-rows');
+  if (!historyData.length) { showToast('No history yet', 'info'); return; }
+  rows.innerHTML = historyData.map(h => `
+    <div class="history-row">
+      <span class="hist-time">${h.ts}</span>
+      <span class="hist-val" style="color:#ff6b6b">${parseFloat(h.temp).toFixed(1)}°C</span>
+      <span class="hist-val" style="color:#ffd93d">${h.load}%</span>
+      <span class="hist-val" style="color:#6bcb77">${h.signal}dBm</span>
+      <span class="hist-status ${h.status === 'CRIT' ? 'crit' : h.status === 'WARN' ? 'warn' : 'ok'}"
+            style="background:${h.status==='CRIT'?'rgba(255,68,68,0.15)':h.status==='WARN'?'rgba(255,170,0,0.15)':'rgba(0,204,102,0.15)'}; color:${h.status==='CRIT'?'#ff4444':h.status==='WARN'?'#ffaa00':'#00cc66'}"
+      >${h.status}</span>
+    </div>`).join('');
+  panel.style.display = 'block';
+}
+
+function closeHistory() { document.getElementById('history-panel').style.display = 'none'; }
+
+// ============================================================
+// SERVICENOW TICKET
+// ============================================================
+async function createTicket() {
+  if (!currentAsset) return;
+  const temp = document.getElementById('m-temp').textContent;
+  const load = document.getElementById('m-load').textContent;
+  const status = document.getElementById('asset-status').textContent;
+
+  if (!CONFIG.snowUrl) {
+    showToast('ServiceNow URL not configured. Opening demo...', 'info');
+    setTimeout(() => {
+      alert(`DEMO — Work Order Created:\n\nAsset: ${currentAsset.id}\nTemp: ${temp}°C  Load: ${load}%\nStatus: ${status}\n\nIn production, this creates:\nINCIDENT in ServiceNow via REST API`);
+    }, 500);
+    return;
+  }
+
+  const body = {
+    short_description: `AR Alert: ${currentAsset.id} — ${status}`,
+    description: `Asset: ${currentAsset.id} | Temp: ${temp}°C | Load: ${load}% | Status: ${status}`,
+    category: 'hardware',
+    urgency: status === 'CRIT' ? '1' : status === 'WARN' ? '2' : '3'
+  };
+
+  try {
+    showToast('Creating ticket...', 'info');
+    const resp = await fetch(`${CONFIG.snowUrl}/api/now/table/incident`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + btoa(`${CONFIG.snowUser}:${CONFIG.snowPass}`)
+      },
+      body: JSON.stringify(body)
+    });
+    const json = await resp.json();
+    const incNum = json.result?.number || 'Created';
+    showToast(`Ticket ${incNum} created ✓`, 'success');
+  } catch(e) {
+    showToast('Ticket creation failed: ' + e.message, 'error');
+  }
+}
+
+// ============================================================
+// SETUP PANEL
+// ============================================================
+function toggleSetup() {
+  const p = document.getElementById('setup-panel');
+  p.style.display = p.style.display === 'block' ? 'none' : 'block';
+  if (p.style.display === 'block') {
+    document.getElementById('mqtt-url').value = CONFIG.mqttUrl;
+    document.getElementById('snow-url').value = CONFIG.snowUrl;
+    document.getElementById('snow-user').value = CONFIG.snowUser;
+    document.getElementById('snow-pass').value = CONFIG.snowPass;
+    const toggle = document.getElementById('sim-toggle');
+    toggle.className = 'toggle-switch' + (CONFIG.simMode ? ' on' : '');
+  }
+}
+
+function closeSetup() { document.getElementById('setup-panel').style.display = 'none'; }
+
+function toggleSim() {
+  const t = document.getElementById('sim-toggle');
+  t.classList.toggle('on');
+  document.getElementById('mqtt-field').style.opacity = t.classList.contains('on') ? '0.4' : '1';
+}
+
+function saveConfig() {
+  const simOn = document.getElementById('sim-toggle').classList.contains('on');
+  CONFIG.simMode = simOn;
+  CONFIG.mqttUrl = document.getElementById('mqtt-url').value.trim();
+  CONFIG.snowUrl = document.getElementById('snow-url').value.trim();
+  CONFIG.snowUser = document.getElementById('snow-user').value.trim();
+  CONFIG.snowPass = document.getElementById('snow-pass').value;
+  localStorage.setItem('ar_config', JSON.stringify(CONFIG));
+  closeSetup();
+  updateConnectionUI();
+  if (simOn) startSimMode();
+  else { document.getElementById('sim-badge').style.display = 'none'; }
+  showToast('Config saved', 'success');
+}
+
+function loadConfig() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('ar_config') || '{}');
+    Object.assign(CONFIG, saved);
+  } catch(e) {}
+}
+
+function updateConnectionUI() {
+  const dot = document.getElementById('conn-dot');
+  const label = document.getElementById('conn-label');
+  const simBadge = document.getElementById('sim-badge');
+  if (CONFIG.simMode) {
+    dot.className = 'simulating';
+    label.textContent = 'Simulation';
+    simBadge.style.display = 'block';
+  } else if (mqttClient && mqttClient.connected) {
+    dot.className = 'connected';
+    label.textContent = 'MQTT Live';
+    simBadge.style.display = 'none';
+  } else {
+    dot.className = '';
+    label.textContent = 'Disconnected';
+    simBadge.style.display = 'none';
+  }
+}
+
+// ============================================================
+// TOAST
+// ============================================================
+let toastTimer;
+function showToast(msg, type = 'success') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = type === 'error' ? 'error' : type === 'info' ? 'info' : '';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.classList.add('hidden'); }, 3000);
+}
+</script>
+</body>
+</html>
