@@ -1,664 +1,1318 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<meta name="theme-color" content="#0d1117">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>AR Maintenance System</title>
-<link rel="manifest" href="manifest.json">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
-<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #e6edf3; overflow: hidden; height: 100vh; width: 100vw; }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>AR Maintenance</title>
+  <link rel="manifest" href="manifest.json">
 
-  /* --- CAMERA LAYER --- */
-  #camera-container { position: fixed; inset: 0; z-index: 0; }
-  #camera { width: 100%; height: 100%; object-fit: cover; }
-  #scan-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: none; }
+  <!-- QR + ML libs -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js" defer></script>
 
-  /* --- OVERLAY LAYER --- */
-  #ar-overlay { position: fixed; inset: 0; z-index: 10; pointer-events: none; }
+  <style>
+    /* ── DESIGN TOKENS (responsive using clamp) ───────────────── */
+    :root {
+      --c-bg: #0d1117;
+      --c-card: rgba(22, 27, 34, 0.96);
+      --c-cyan: #00d4ff;
+      --c-green: #00cc66;
+      --c-warn: #ffaa00;
+      --c-red: #ff4444;
+      --c-text: #e6edf3;
+      --c-muted: rgba(230, 237, 243, 0.5);
+      /* Dynamic safe areas */
+      --sft: env(safe-area-inset-top, 0px);
+      --sfb: env(safe-area-inset-bottom, 0px);
+      /* Responsive scale: clamp(min, preferred, max) */
+      --fs-xs: clamp(9px, 2.2vw, 12px);
+      --fs-sm: clamp(11px, 2.8vw, 14px);
+      --fs-md: clamp(13px, 3.2vw, 16px);
+      --fs-lg: clamp(16px, 4vw, 22px);
+      --fs-xl: clamp(20px, 5vw, 28px);
+      --fs-2xl: clamp(26px, 6.5vw, 40px);
+      --radius: clamp(12px, 3.5vw, 22px);
+      --pad: clamp(10px, 3vw, 18px);
+      --nav-h: clamp(56px, 10vh, 70px);
+      --touch: 48px;
+      /* Android minimum tap target */
+    }
 
-  /* --- SCANNER VIEWFINDER --- */
-  #viewfinder {
-    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    width: 250px; height: 250px; z-index: 20; pointer-events: none;
-  }
-  .vf-corner {
-    position: absolute; width: 30px; height: 30px;
-    border-color: #00d4ff; border-style: solid;
-  }
-  .vf-corner.tl { top: 0; left: 0; border-width: 3px 0 0 3px; }
-  .vf-corner.tr { top: 0; right: 0; border-width: 3px 3px 0 0; }
-  .vf-corner.bl { bottom: 0; left: 0; border-width: 0 0 3px 3px; }
-  .vf-corner.br { bottom: 0; right: 0; border-width: 0 3px 3px 0; }
-  #scan-line {
-    position: absolute; left: 4px; right: 4px; height: 2px;
-    background: linear-gradient(90deg, transparent, #00d4ff, transparent);
-    animation: scanline 2s linear infinite;
-  }
-  @keyframes scanline { 0% { top: 4px; } 100% { top: calc(100% - 6px); } }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
 
-  /* --- STATUS BAR --- */
-  #status-bar {
-    position: fixed; top: 0; left: 0; right: 0; z-index: 30;
-    background: rgba(13,17,23,0.85); backdrop-filter: blur(12px);
-    padding: 12px 16px; display: flex; align-items: center; justify-content: space-between;
-    border-bottom: 1px solid rgba(0,212,255,0.2);
-  }
-  #app-title { font-size: 15px; font-weight: 700; color: #00d4ff; letter-spacing: 1px; text-transform: uppercase; }
-  #connection-badge {
-    display: flex; align-items: center; gap: 6px; font-size: 12px;
-  }
-  #conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #ff4444; transition: background 0.3s; }
-  #conn-dot.connected { background: #00cc66; }
-  #conn-dot.simulating { background: #ffaa00; }
+    html,
+    body {
+      width: 100dvw;
+      height: 100dvh;
+      overflow: hidden;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--c-bg);
+      color: var(--c-text);
+      touch-action: manipulation;
+    }
 
-  /* --- BOTTOM SCAN PROMPT --- */
-  #scan-prompt {
-    position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%);
-    z-index: 30; text-align: center; color: rgba(255,255,255,0.7);
-    animation: pulse-opacity 2s ease-in-out infinite;
-  }
-  @keyframes pulse-opacity { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
-  #scan-prompt .icon { font-size: 32px; margin-bottom: 6px; }
-  #scan-prompt .text { font-size: 14px; letter-spacing: 0.5px; }
+    /* ── CAMERA + DETECTION CANVAS ────────────────────────────── */
+    #cam-wrap {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      background: #000;
+    }
 
-  /* --- TELEMETRY CARD --- */
-  #telemetry-card {
-    position: fixed; top: 80px; left: 16px; right: 16px; z-index: 30;
-    background: rgba(13,17,23,0.9); backdrop-filter: blur(16px);
-    border: 1px solid rgba(0,212,255,0.3); border-radius: 16px;
-    padding: 16px; display: none;
-    animation: slideIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-  }
-  @keyframes slideIn { from { opacity: 0; transform: translateY(-20px) scale(0.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
-  #asset-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-  #asset-id { font-size: 18px; font-weight: 700; color: #00d4ff; }
-  #asset-status { padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; letter-spacing: 1px; }
-  #asset-status.ok { background: rgba(0,204,102,0.2); color: #00cc66; border: 1px solid #00cc66; }
-  #asset-status.warn { background: rgba(255,170,0,0.2); color: #ffaa00; border: 1px solid #ffaa00; }
-  #asset-status.crit { background: rgba(255,68,68,0.2); color: #ff4444; border: 1px solid #ff4444; }
+    #cam {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
 
-  .metrics-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 14px; }
-  .metric-box {
-    background: rgba(255,255,255,0.05); border-radius: 10px; padding: 10px;
-    text-align: center; position: relative; overflow: hidden;
-  }
-  .metric-box::before {
-    content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 2px;
-    background: var(--metric-color, #00d4ff);
-  }
-  .metric-label { font-size: 10px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
-  .metric-value { font-size: 20px; font-weight: 700; color: var(--metric-color, #e6edf3); }
-  .metric-unit { font-size: 11px; color: rgba(255,255,255,0.4); margin-top: 2px; }
+    #scan-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: none;
+    }
 
-  #uptime-bar { font-size: 12px; color: rgba(255,255,255,0.5); margin-bottom: 14px; display: flex; align-items: center; gap: 6px; }
-  #uptime-val { color: #a5d6ff; font-weight: 600; }
-  #timestamp-val { margin-left: auto; font-size: 10px; }
+    /* AR overlay canvas — detection boxes drawn here */
+    #ar-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 2;
+    }
 
-  /* --- ACTION BUTTONS --- */
-  .action-row { display: flex; gap: 10px; }
-  .action-btn {
-    flex: 1; padding: 12px; border-radius: 10px; border: none;
-    font-size: 13px; font-weight: 600; cursor: pointer; letter-spacing: 0.5px;
-    transition: transform 0.15s, box-shadow 0.15s; pointer-events: all;
-  }
-  .action-btn:active { transform: scale(0.97); }
-  .btn-ticket { background: linear-gradient(135deg, #0047ab, #0064d4); color: white; }
-  .btn-history { background: rgba(255,255,255,0.08); color: #e6edf3; border: 1px solid rgba(255,255,255,0.15); }
-  .btn-close { background: rgba(255,68,68,0.15); color: #ff4444; border: 1px solid rgba(255,68,68,0.3); }
+    /* ── SCRIMS ───────────────────────────────────────────────── */
+    .scrim-t {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 5;
+      height: calc(60px + var(--sft));
+      background: linear-gradient(to bottom, rgba(13, 17, 23, .9) 50%, transparent);
+    }
 
-  /* --- HISTORY PANEL --- */
-  #history-panel {
-    position: fixed; bottom: 0; left: 0; right: 0; z-index: 40;
-    background: rgba(13,17,23,0.97); backdrop-filter: blur(20px);
-    border-top: 1px solid rgba(0,212,255,0.2); border-radius: 20px 20px 0 0;
-    padding: 16px; max-height: 55vh; overflow-y: auto; display: none;
-    animation: slideUp 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
-  }
-  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
-  #history-title { font-size: 15px; font-weight: 700; margin-bottom: 12px; color: #00d4ff; display: flex; justify-content: space-between; }
-  .history-row {
-    display: grid; grid-template-columns: auto 1fr 1fr 1fr auto;
-    gap: 8px; padding: 10px; border-radius: 8px; margin-bottom: 6px;
-    background: rgba(255,255,255,0.04); font-size: 12px; align-items: center;
-  }
-  .hist-time { color: rgba(255,255,255,0.4); font-size: 10px; }
-  .hist-val { font-weight: 600; }
-  .hist-status { padding: 2px 6px; border-radius: 4px; font-size: 10px; text-align: center; }
+    .scrim-b {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 5;
+      height: calc(var(--nav-h) + var(--sfb) + 20px);
+      background: linear-gradient(to top, rgba(13, 17, 23, .95) 50%, transparent);
+    }
 
-  /* --- SETUP PANEL --- */
-  #setup-btn {
-    position: fixed; bottom: 20px; right: 16px; z-index: 30;
-    background: rgba(13,17,23,0.8); border: 1px solid rgba(255,255,255,0.15);
-    color: rgba(255,255,255,0.6); border-radius: 50%; width: 44px; height: 44px;
-    font-size: 20px; cursor: pointer; backdrop-filter: blur(10px);
-    display: flex; align-items: center; justify-content: center;
-  }
-  #setup-panel {
-    position: fixed; bottom: 0; left: 0; right: 0; z-index: 50;
-    background: #161b22; border-top: 1px solid rgba(255,255,255,0.1);
-    border-radius: 20px 20px 0 0; padding: 20px; display: none;
-    animation: slideUp 0.35s ease;
-  }
-  #setup-panel h2 { font-size: 16px; margin-bottom: 16px; color: #00d4ff; }
-  .setup-field { margin-bottom: 12px; }
-  .setup-field label { font-size: 12px; color: rgba(255,255,255,0.5); margin-bottom: 4px; display: block; }
-  .setup-field input {
-    width: 100%; padding: 10px 12px; background: rgba(255,255,255,0.06);
-    border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; color: #e6edf3;
-    font-size: 14px;
-  }
-  .setup-toggle { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-  .toggle-switch { width: 44px; height: 24px; background: rgba(255,255,255,0.1); border-radius: 12px; position: relative; cursor: pointer; transition: background 0.3s; }
-  .toggle-switch.on { background: #00d4ff; }
-  .toggle-knob { position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; background: white; border-radius: 50%; transition: left 0.3s; }
-  .toggle-switch.on .toggle-knob { left: 22px; }
-  .btn-save { width: 100%; padding: 12px; background: #00d4ff; color: #0d1117; border: none; border-radius: 10px; font-size: 14px; font-weight: 700; cursor: pointer; margin-top: 4px; }
+    /* ── TOP BAR ──────────────────────────────────────────────── */
+    #top-bar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 20;
+      padding: calc(var(--sft) + 12px) var(--pad) 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
 
-  /* --- NOTIFICATION TOAST --- */
-  #toast {
-    position: fixed; top: 80px; left: 50%; transform: translateX(-50%); z-index: 60;
-    background: rgba(0,204,102,0.9); color: white; padding: 10px 20px; border-radius: 20px;
-    font-size: 13px; font-weight: 600; pointer-events: none; transition: opacity 0.4s;
-    white-space: nowrap;
-  }
-  #toast.error { background: rgba(255,68,68,0.9); }
-  #toast.info { background: rgba(0,100,212,0.9); }
-  #toast.hidden { opacity: 0; }
+    #app-name {
+      font-size: var(--fs-md);
+      font-weight: 800;
+      color: var(--c-cyan);
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+    }
 
-  /* --- BOTTOM NAV --- */
-  #bottom-nav {
-    position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
-    background: rgba(13,17,23,0.9); backdrop-filter: blur(12px);
-    border-top: 1px solid rgba(255,255,255,0.08);
-    display: flex; padding: 8px 0 max(8px, env(safe-area-inset-bottom));
-  }
-  .nav-btn {
-    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
-    background: none; border: none; color: rgba(255,255,255,0.4); cursor: pointer; padding: 6px;
-    font-size: 10px; transition: color 0.2s;
-  }
-  .nav-btn.active { color: #00d4ff; }
-  .nav-btn .icon { font-size: 22px; }
+    #conn-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(0, 0, 0, .5);
+      border: 1px solid rgba(255, 255, 255, .12);
+      border-radius: 20px;
+      padding: clamp(5px, 1.5vw, 8px) clamp(10px, 3vw, 14px);
+      font-size: var(--fs-xs);
+    }
 
-  /* --- SIM MODE BADGE --- */
-  #sim-badge {
-    position: fixed; top: 60px; right: 10px; z-index: 25;
-    background: rgba(255,170,0,0.15); border: 1px solid rgba(255,170,0,0.4);
-    color: #ffaa00; font-size: 10px; padding: 3px 8px; border-radius: 10px;
-    letter-spacing: 0.5px; display: none;
-  }
-</style>
+    #conn-dot {
+      width: clamp(7px, 2vw, 10px);
+      height: clamp(7px, 2vw, 10px);
+      border-radius: 50%;
+      background: var(--c-red);
+      flex-shrink: 0;
+      transition: background .3s;
+    }
+
+    #conn-dot.sim {
+      background: var(--c-warn);
+    }
+
+    #conn-dot.live {
+      background: var(--c-green);
+    }
+
+    /* ── DETECTION STATUS STRIP ───────────────────────────────── */
+    #det-strip {
+      position: fixed;
+      top: calc(var(--sft) + 52px);
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 18;
+      font-size: var(--fs-xs);
+      padding: 4px 12px;
+      background: rgba(0, 0, 0, .5);
+      border-radius: 12px;
+      color: var(--c-muted);
+      white-space: nowrap;
+      display: none;
+    }
+
+    /* ── VIEWFINDER ───────────────────────────────────────────── */
+    #viewfinder {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -55%);
+      /* Size = 55% of shorter screen dimension, capped at 240px */
+      width: min(55vw, 55vh, 240px);
+      height: min(55vw, 55vh, 240px);
+      z-index: 10;
+      pointer-events: none;
+      transition: opacity .3s;
+    }
+
+    .vc {
+      position: absolute;
+      width: clamp(22px, 6vw, 32px);
+      height: clamp(22px, 6vw, 32px);
+      border-color: var(--c-cyan);
+      border-style: solid;
+    }
+
+    .vc.tl {
+      top: 0;
+      left: 0;
+      border-width: 3px 0 0 3px;
+      border-radius: 4px 0 0 0;
+    }
+
+    .vc.tr {
+      top: 0;
+      right: 0;
+      border-width: 3px 3px 0 0;
+      border-radius: 0 4px 0 0;
+    }
+
+    .vc.bl {
+      bottom: 0;
+      left: 0;
+      border-width: 0 0 3px 3px;
+      border-radius: 0 0 0 4px;
+    }
+
+    .vc.br {
+      bottom: 0;
+      right: 0;
+      border-width: 0 3px 3px 0;
+      border-radius: 0 0 4px 0;
+    }
+
+    #scan-line {
+      position: absolute;
+      left: 6px;
+      right: 6px;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--c-cyan), transparent);
+      animation: scanAnim 2s linear infinite;
+    }
+
+    @keyframes scanAnim {
+      0% {
+        top: 6px
+      }
+
+      100% {
+        top: calc(100% - 8px)
+      }
+    }
+
+    /* ── SCAN HINT ────────────────────────────────────────────── */
+    #scan-hint {
+      position: fixed;
+      bottom: calc(var(--sfb) + var(--nav-h) + 14px);
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 15;
+      text-align: center;
+      animation: breathe 2.5s ease-in-out infinite;
+      pointer-events: none;
+    }
+
+    @keyframes breathe {
+
+      0%,
+      100% {
+        opacity: .6
+      }
+
+      50% {
+        opacity: 1
+      }
+    }
+
+    #scan-hint .hi {
+      font-size: clamp(28px, 7vw, 40px);
+    }
+
+    #scan-hint .ht {
+      font-size: var(--fs-sm);
+      color: rgba(255, 255, 255, .75);
+      margin-top: 5px;
+    }
+
+    #scan-hint .hs {
+      font-size: var(--fs-xs);
+      color: rgba(255, 255, 255, .4);
+      margin-top: 3px;
+    }
+
+    /* ── DEMO BUTTON ──────────────────────────────────────────── */
+    #demo-btn {
+      position: fixed;
+      bottom: calc(var(--sfb) + var(--nav-h) + clamp(64px, 14vh, 90px));
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      background: rgba(0, 212, 255, .15);
+      border: 1.5px solid var(--c-cyan);
+      color: var(--c-cyan);
+      border-radius: 24px;
+      padding: clamp(11px, 3vh, 15px) clamp(22px, 6vw, 32px);
+      font-size: var(--fs-sm);
+      font-weight: 700;
+      cursor: pointer;
+      backdrop-filter: blur(8px);
+      white-space: nowrap;
+      min-height: var(--touch);
+    }
+
+    /* ── BOTTOM NAV ───────────────────────────────────────────── */
+    #bottom-nav {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 20;
+      background: rgba(13, 17, 23, .97);
+      backdrop-filter: blur(16px);
+      border-top: 1px solid rgba(255, 255, 255, .08);
+      display: flex;
+      padding-bottom: var(--sfb);
+    }
+
+    .nav-btn {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      padding: clamp(8px, 2vh, 12px) 6px;
+      background: none;
+      border: none;
+      color: rgba(255, 255, 255, .35);
+      cursor: pointer;
+      font-size: var(--fs-xs);
+      font-weight: 600;
+      min-height: var(--nav-h);
+      transition: color .2s;
+    }
+
+    .nav-btn .ni {
+      font-size: clamp(20px, 5vw, 26px);
+      line-height: 1;
+    }
+
+    .nav-btn.active {
+      color: var(--c-cyan);
+    }
+
+    /* ── TELEMETRY CARD ───────────────────────────────────────── */
+    #tcard {
+      position: fixed;
+      top: calc(var(--sft) + clamp(58px, 12vh, 80px));
+      left: var(--pad);
+      right: var(--pad);
+      z-index: 25;
+      background: var(--c-card);
+      backdrop-filter: blur(20px);
+      border: 1px solid rgba(0, 212, 255, .25);
+      border-radius: var(--radius);
+      padding: var(--pad);
+      display: none;
+      animation: slideDown .35s cubic-bezier(.34, 1.56, .64, 1);
+    }
+
+    @keyframes slideDown {
+      from {
+        opacity: 0;
+        transform: translateY(-16px)
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0)
+      }
+    }
+
+    #asset-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: clamp(10px, 2.5vh, 16px);
+    }
+
+    #asset-name {
+      font-size: var(--fs-lg);
+      font-weight: 800;
+      color: var(--c-cyan);
+    }
+
+    #asset-badge {
+      padding: clamp(4px, 1.2vh, 7px) clamp(10px, 3vw, 14px);
+      border-radius: 14px;
+      font-size: var(--fs-xs);
+      font-weight: 700;
+      letter-spacing: 1px;
+      border: 1px solid;
+    }
+
+    #asset-badge.ok {
+      background: rgba(0, 204, 102, .15);
+      color: var(--c-green);
+      border-color: var(--c-green);
+    }
+
+    #asset-badge.warn {
+      background: rgba(255, 170, 0, .15);
+      color: var(--c-warn);
+      border-color: var(--c-warn);
+    }
+
+    #asset-badge.crit {
+      background: rgba(255, 68, 68, .15);
+      color: var(--c-red);
+      border-color: var(--c-red);
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: clamp(6px, 1.5vw, 10px);
+      margin-bottom: clamp(10px, 2.2vh, 14px);
+    }
+
+    .metric {
+      background: rgba(255, 255, 255, .05);
+      border-radius: clamp(8px, 2vw, 14px);
+      padding: clamp(8px, 2vh, 12px) 6px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .metric::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: var(--mc, var(--c-cyan));
+    }
+
+    .m-lbl {
+      font-size: var(--fs-xs);
+      color: var(--c-muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      margin-bottom: 4px;
+    }
+
+    .m-val {
+      font-size: var(--fs-2xl);
+      font-weight: 800;
+      color: var(--mc, var(--c-text));
+      line-height: 1;
+    }
+
+    .m-unit {
+      font-size: var(--fs-xs);
+      color: var(--c-muted);
+      margin-top: 3px;
+    }
+
+    #ts-row {
+      font-size: var(--fs-xs);
+      color: var(--c-muted);
+      margin-bottom: clamp(10px, 2.5vh, 16px);
+      display: flex;
+      gap: 6px;
+    }
+
+    #ts-val {
+      margin-left: auto;
+    }
+
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: clamp(6px, 1.5vw, 10px);
+    }
+
+    .act-btn {
+      padding: clamp(12px, 3vh, 16px) 10px;
+      border-radius: clamp(8px, 2vw, 14px);
+      border: none;
+      font-size: var(--fs-sm);
+      font-weight: 700;
+      cursor: pointer;
+      min-height: var(--touch);
+      letter-spacing: .3px;
+      transition: opacity .15s, transform .1s;
+    }
+
+    .act-btn:active {
+      opacity: .8;
+      transform: scale(.97);
+    }
+
+    .btn-ticket {
+      background: linear-gradient(135deg, #0047ab, #0875d4);
+      color: #fff;
+      grid-column: 1/-1;
+    }
+
+    .btn-history {
+      background: rgba(255, 255, 255, .08);
+      color: var(--c-text);
+      border: 1px solid rgba(255, 255, 255, .12);
+    }
+
+    .btn-close {
+      background: rgba(255, 68, 68, .12);
+      color: var(--c-red);
+      border: 1px solid rgba(255, 68, 68, .25);
+    }
+
+    /* ── SLIDE PANELS (History + Settings) ───────────────────── */
+    .panel-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: none;
+      background: rgba(0, 0, 0, .7);
+      backdrop-filter: blur(4px);
+      align-items: flex-end;
+    }
+
+    .panel-backdrop.open {
+      display: flex;
+    }
+
+    .panel-inner {
+      width: 100%;
+      background: #161b22;
+      border-radius: 24px 24px 0 0;
+      border-top: 1px solid rgba(255, 255, 255, .1);
+      padding: var(--pad) var(--pad) calc(var(--sfb) + var(--pad));
+      max-height: 80dvh;
+      overflow-y: auto;
+      animation: slideUp .3s ease;
+    }
+
+    @keyframes slideUp {
+      from {
+        transform: translateY(100%)
+      }
+
+      to {
+        transform: translateY(0)
+      }
+    }
+
+    .panel-title {
+      font-size: var(--fs-lg);
+      font-weight: 800;
+      margin-bottom: clamp(14px, 3vh, 20px);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: var(--c-cyan);
+    }
+
+    .pcl {
+      font-size: var(--fs-xl);
+      color: var(--c-muted);
+      cursor: pointer;
+      padding: 4px 8px;
+      min-height: var(--touch);
+      display: flex;
+      align-items: center;
+    }
+
+    /* History rows */
+    .hrow {
+      display: grid;
+      grid-template-columns: auto 1fr 1fr 1fr auto;
+      gap: 6px;
+      padding: clamp(8px, 2vh, 12px);
+      border-radius: 10px;
+      margin-bottom: 6px;
+      background: rgba(255, 255, 255, .04);
+      font-size: var(--fs-xs);
+      align-items: center;
+    }
+
+    .htime {
+      color: rgba(255, 255, 255, .4);
+      font-size: var(--fs-xs);
+    }
+
+    .hval {
+      font-weight: 700;
+      text-align: center;
+    }
+
+    .hbadge {
+      padding: 3px 6px;
+      border-radius: 6px;
+      font-size: var(--fs-xs);
+      text-align: center;
+      font-weight: 600;
+    }
+
+    /* Settings fields */
+    .s-section {
+      font-size: var(--fs-xs);
+      font-weight: 700;
+      color: var(--c-cyan);
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      margin: 14px 0 8px;
+    }
+
+    .s-toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: clamp(10px, 2.5vh, 16px);
+    }
+
+    .s-label {
+      font-size: var(--fs-sm);
+      font-weight: 600;
+    }
+
+    .s-sub {
+      font-size: var(--fs-xs);
+      color: var(--c-muted);
+      margin-top: 2px;
+    }
+
+    .fld-lbl {
+      font-size: var(--fs-xs);
+      color: var(--c-muted);
+      margin-bottom: 5px;
+    }
+
+    .fld {
+      width: 100%;
+      padding: clamp(11px, 3vh, 15px) 14px;
+      background: rgba(255, 255, 255, .06);
+      border: 1px solid rgba(255, 255, 255, .12);
+      border-radius: 10px;
+      color: var(--c-text);
+      font-size: var(--fs-sm);
+      margin-bottom: clamp(8px, 2vh, 12px);
+      outline: none;
+    }
+
+    .fld:focus {
+      border-color: var(--c-cyan);
+    }
+
+    .toggle {
+      width: clamp(46px, 12vw, 56px);
+      height: clamp(26px, 7vw, 32px);
+      background: rgba(255, 255, 255, .12);
+      border-radius: 16px;
+      position: relative;
+      cursor: pointer;
+      transition: background .3s;
+      flex-shrink: 0;
+      min-width: 46px;
+    }
+
+    .toggle.on {
+      background: var(--c-cyan);
+    }
+
+    .toggle-k {
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: calc(50% - 1px);
+      aspect-ratio: 1;
+      background: white;
+      border-radius: 50%;
+      transition: left .3s;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
+    }
+
+    .toggle.on .toggle-k {
+      left: calc(50% + 1px);
+    }
+
+    .s-save {
+      width: 100%;
+      padding: clamp(13px, 3.5vh, 17px);
+      background: var(--c-cyan);
+      color: #0d1117;
+      border: none;
+      border-radius: 14px;
+      font-size: var(--fs-md);
+      font-weight: 800;
+      cursor: pointer;
+      margin-top: 8px;
+      min-height: var(--touch);
+    }
+
+    .s-close {
+      width: 100%;
+      padding: clamp(12px, 3vh, 16px);
+      background: rgba(255, 255, 255, .06);
+      color: var(--c-text);
+      border: 1px solid rgba(255, 255, 255, .1);
+      border-radius: 14px;
+      font-size: var(--fs-sm);
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 8px;
+      min-height: var(--touch);
+    }
+
+    /* ── TOAST ────────────────────────────────────────────────── */
+    #toast {
+      position: fixed;
+      top: calc(var(--sft) + 68px);
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 80;
+      padding: clamp(8px, 2vh, 12px) clamp(18px, 5vw, 26px);
+      border-radius: 24px;
+      font-size: var(--fs-sm);
+      font-weight: 700;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity .3s;
+      white-space: nowrap;
+      max-width: calc(100dvw - 32px);
+    }
+
+    #toast.show {
+      opacity: 1;
+    }
+
+    #toast.ok {
+      background: rgba(0, 204, 102, .92);
+      color: #fff;
+    }
+
+    #toast.warn {
+      background: rgba(255, 170, 0, .92);
+      color: #0d1117;
+    }
+
+    #toast.err {
+      background: rgba(255, 68, 68, .92);
+      color: #fff;
+    }
+
+    #toast.info {
+      background: rgba(0, 100, 212, .92);
+      color: #fff;
+    }
+
+    /* ── DETECTED OBJECTS LABEL LIST ─────────────────────────── */
+    #obj-list {
+      position: fixed;
+      left: var(--pad);
+      z-index: 22;
+      top: calc(var(--sft) + clamp(58px, 12vh, 80px));
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      pointer-events: none;
+    }
+
+    .obj-chip {
+      background: rgba(0, 212, 255, .18);
+      border: 1px solid rgba(0, 212, 255, .4);
+      color: var(--c-cyan);
+      font-size: var(--fs-xs);
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 10px;
+      white-space: nowrap;
+      backdrop-filter: blur(6px);
+    }
+  </style>
 </head>
+
 <body>
 
-<!-- CAMERA -->
-<div id="camera-container">
-  <video id="camera" autoplay muted playsinline></video>
-  <canvas id="scan-canvas"></canvas>
-</div>
-
-<!-- AR OVERLAY (info boxes drawn here later) -->
-<div id="ar-overlay"></div>
-
-<!-- SCANNER VIEWFINDER -->
-<div id="viewfinder">
-  <div class="vf-corner tl"></div>
-  <div class="vf-corner tr"></div>
-  <div class="vf-corner bl"></div>
-  <div class="vf-corner br"></div>
-  <div id="scan-line"></div>
-</div>
-
-<!-- STATUS BAR -->
-<div id="status-bar">
-  <div id="app-title">AR Maintenance</div>
-  <div id="connection-badge">
-    <div id="conn-dot"></div>
-    <span id="conn-label">Disconnected</span>
+  <!-- CAMERA -->
+  <div id="cam-wrap">
+    <video id="cam" autoplay muted playsinline></video>
+    <canvas id="scan-canvas"></canvas>
+    <canvas id="ar-canvas"></canvas>
   </div>
-</div>
 
-<div id="sim-badge">SIM MODE</div>
+  <div class="scrim-t"></div>
+  <div class="scrim-b"></div>
 
-<!-- SCAN PROMPT -->
-<div id="scan-prompt">
-  <div class="icon">📷</div>
-  <div class="text">Point camera at asset QR code</div>
-</div>
-
-<!-- TELEMETRY CARD -->
-<div id="telemetry-card">
-  <div id="asset-header">
-    <div id="asset-id">ASSET</div>
-    <div id="asset-status" class="ok">OK</div>
-  </div>
-  <div class="metrics-grid">
-    <div class="metric-box" style="--metric-color:#ff6b6b">
-      <div class="metric-label">CPU Temp</div>
-      <div class="metric-value" id="m-temp">--</div>
-      <div class="metric-unit">°C</div>
-    </div>
-    <div class="metric-box" style="--metric-color:#ffd93d">
-      <div class="metric-label">CPU Load</div>
-      <div class="metric-value" id="m-load">--</div>
-      <div class="metric-unit">%</div>
-    </div>
-    <div class="metric-box" style="--metric-color:#6bcb77">
-      <div class="metric-label">Signal</div>
-      <div class="metric-value" id="m-signal">--</div>
-      <div class="metric-unit">dBm</div>
+  <!-- TOP BAR -->
+  <div id="top-bar">
+    <div id="app-name">AR Maintain</div>
+    <div id="conn-pill">
+      <div id="conn-dot" class="sim"></div>
+      <span id="conn-label">Sim Mode</span>
     </div>
   </div>
-  <div id="uptime-bar">
-    <span>⏱ Uptime:</span>
-    <span id="uptime-val">--</span>
-    <span id="timestamp-val">--</span>
+
+  <!-- DETECTION STATUS -->
+  <div id="det-strip">🤖 Loading AI model...</div>
+
+  <!-- VIEWFINDER -->
+  <div id="viewfinder">
+    <div class="vc tl"></div>
+    <div class="vc tr"></div>
+    <div class="vc bl"></div>
+    <div class="vc br"></div>
+    <div id="scan-line"></div>
   </div>
-  <div class="action-row">
-    <button class="action-btn btn-ticket" onclick="createTicket()">🎫 Create Ticket</button>
-    <button class="action-btn btn-history" onclick="showHistory()">📊 History</button>
-    <button class="action-btn btn-close" onclick="clearAsset()">✕</button>
+
+  <!-- SCAN HINT -->
+  <div id="scan-hint">
+    <div class="hi">📷</div>
+    <div class="ht">Scan QR code or point at equipment</div>
+    <div class="hs">or tap DEMO to try with simulated data</div>
   </div>
-</div>
 
-<!-- HISTORY PANEL -->
-<div id="history-panel">
-  <div id="history-title">
-    <span>📈 Telemetry History</span>
-    <span onclick="closeHistory()" style="cursor:pointer;color:rgba(255,255,255,0.4);">✕</span>
-  </div>
-  <div id="history-rows"></div>
-</div>
+  <!-- DEMO BUTTON -->
+  <button id="demo-btn" onclick="loadDemoAsset()">⚡ LOAD DEMO ASSET</button>
 
-<!-- TOAST -->
-<div id="toast" class="hidden">Message</div>
-
-<!-- SETUP BUTTON -->
-<button id="setup-btn" onclick="toggleSetup()">⚙️</button>
-
-<!-- SETUP PANEL -->
-<div id="setup-panel">
-  <h2>⚙️ Configuration</h2>
-  <div class="setup-toggle">
-    <div>
-      <div style="font-size:14px;font-weight:600;">Simulation Mode</div>
-      <div style="font-size:12px;color:rgba(255,255,255,0.4);">Generate fake telemetry data</div>
+  <!-- TELEMETRY CARD -->
+  <div id="tcard">
+    <div id="asset-row">
+      <div id="asset-name">ASSET</div>
+      <div id="asset-badge" class="ok">OK</div>
     </div>
-    <div class="toggle-switch" id="sim-toggle" onclick="toggleSim()">
-      <div class="toggle-knob"></div>
+    <div class="metrics">
+      <div class="metric" style="--mc:#ff6b6b">
+        <div class="m-lbl">CPU Temp</div>
+        <div class="m-val" id="m-temp">--</div>
+        <div class="m-unit">°C</div>
+      </div>
+      <div class="metric" style="--mc:#ffd93d">
+        <div class="m-lbl">CPU Load</div>
+        <div class="m-val" id="m-load">--</div>
+        <div class="m-unit">%</div>
+      </div>
+      <div class="metric" style="--mc:#6bcb77">
+        <div class="m-lbl">Uptime</div>
+        <div class="m-val" id="m-uptime" style="font-size:clamp(18px,4.5vw,28px)">--</div>
+        <div class="m-unit">hrs</div>
+      </div>
+    </div>
+    <div id="ts-row">
+      <span>Last update:</span>
+      <span id="ts-val">--</span>
+    </div>
+    <div class="actions">
+      <button class="act-btn btn-ticket" onclick="createTicket()">🎫 Create ServiceNow Ticket</button>
+      <button class="act-btn btn-history" onclick="showPanel('history')">📈 History</button>
+      <button class="act-btn btn-close" onclick="clearAsset()">✕ New Scan</button>
     </div>
   </div>
-  <div class="setup-field" id="mqtt-field">
-    <label>MQTT Broker (WebSocket)</label>
-    <input type="text" id="mqtt-url" placeholder="ws://192.168.1.100:9001" />
+
+  <!-- Detected object chips (overlaid on camera) -->
+  <div id="obj-list"></div>
+
+  <!-- TOAST -->
+  <div id="toast"></div>
+
+  <!-- BOTTOM NAV -->
+  <div id="bottom-nav">
+    <button class="nav-btn active"><span class="ni">📷</span>Scan</button>
+    <button class="nav-btn" onclick="showPanel('settings')"><span class="ni">⚙️</span>Settings</button>
+    <button class="nav-btn" onclick="manualEntry()"><span class="ni">✏️</span>Manual</button>
   </div>
-  <div class="setup-field">
-    <label>ServiceNow Instance URL</label>
-    <input type="text" id="snow-url" placeholder="https://devXXXXXX.service-now.com" />
+
+  <!-- HISTORY PANEL -->
+  <div class="panel-backdrop" id="panel-history" onclick="handleBdrop(event,'history')">
+    <div class="panel-inner">
+      <div class="panel-title">
+        📈 Telemetry History
+        <span class="pcl" onclick="closePanel('history')">✕</span>
+      </div>
+      <div id="hist-rows"></div>
+    </div>
   </div>
-  <div class="setup-field">
-    <label>ServiceNow User / Password</label>
-    <input type="text" id="snow-user" placeholder="admin" style="margin-bottom:6px;" />
-    <input type="password" id="snow-pass" placeholder="password" />
+
+  <!-- SETTINGS PANEL -->
+  <div class="panel-backdrop" id="panel-settings" onclick="handleBdrop(event,'settings')">
+    <div class="panel-inner">
+      <div class="panel-title">
+        ⚙️ Configuration
+        <span class="pcl" onclick="closePanel('settings')">✕</span>
+      </div>
+
+      <div class="s-section">Mode</div>
+      <div class="s-toggle-row">
+        <div>
+          <div class="s-label">Simulation Mode</div>
+          <div class="s-sub">Generate fake data (no MQTT required)</div>
+        </div>
+        <div class="toggle on" id="sim-t"
+          onclick="this.classList.toggle('on');document.getElementById('mqtt-section').style.opacity=this.classList.contains('on')?'.35':'1'">
+          <div class="toggle-k"></div>
+        </div>
+      </div>
+
+      <div class="s-section">MQTT Broker</div>
+      <div id="mqtt-section">
+        <div class="fld-lbl">WebSocket URL</div>
+        <input class="fld" id="f-mqtt" type="url" placeholder="ws://192.168.1.100:9001" inputmode="url">
+      </div>
+
+      <div class="s-section">ServiceNow</div>
+      <div class="fld-lbl">Instance URL</div>
+      <input class="fld" id="f-snow" type="url" placeholder="https://devXXXXXX.service-now.com" inputmode="url">
+      <div class="fld-lbl">Username</div>
+      <input class="fld" id="f-user" type="text" placeholder="admin" autocomplete="username">
+      <div class="fld-lbl">Password</div>
+      <input class="fld" id="f-pass" type="password" placeholder="password" autocomplete="current-password">
+
+      <button class="s-save" onclick="saveSettings()">💾 Save &amp; Apply</button>
+      <button class="s-close" onclick="closePanel('settings')">Cancel</button>
+    </div>
   </div>
-  <button class="btn-save" onclick="saveConfig()">Save &amp; Connect</button>
-  <button class="btn-save" style="background:rgba(255,255,255,0.08);color:#e6edf3;margin-top:8px;" onclick="closeSetup()">Cancel</button>
-</div>
 
-<!-- BOTTOM NAV -->
-<div id="bottom-nav">
-  <button class="nav-btn active" id="nav-scan">
-    <span class="icon">📷</span>Scan
-  </button>
-  <button class="nav-btn" id="nav-assets" onclick="showToast('Feature coming in v2','info')">
-    <span class="icon">🖥️</span>Assets
-  </button>
-  <button class="nav-btn" id="nav-tickets" onclick="showToast('Opens ServiceNow','info')">
-    <span class="icon">🎫</span>Tickets
-  </button>
-</div>
+  <script>
+    // ─────────────────────────────────────────────────────────────
+    // CONFIG & STATE
+    // ─────────────────────────────────────────────────────────────
+    const CFG = { sim: true, mqtt: '', snow: '', user: 'admin', pass: '' };
+    let mqttClient = null, curAsset = null;
+    let simTimer = null, history = [];
+    let scanning = false, scanTimer = null;
+    let detModel = null, detRunning = false;
 
-<script>
-// ============================================================
-// CONFIGURATION
-// ============================================================
-const CONFIG = {
-  simMode: true,
-  mqttUrl: '',
-  snowUrl: '',
-  snowUser: 'admin',
-  snowPass: ''
-};
+    // Asset type mapping for COCO-SSD → IT asset labels
+    const OBJ_ASSET_MAP = {
+      'laptop': 'LAPTOP', 'tv': 'DISPLAY', 'monitor': 'DISPLAY',
+      'cell phone': 'MOBILE', 'remote': 'CTRL-UNIT',
+      'keyboard': 'WORKSTATION', 'mouse': 'WORKSTATION',
+      'book': 'DEVICE', 'clock': 'SENSOR',
+      'cup': 'DEVICE' /* demo fallback */
+    };
+    const DETECT_INTERVAL = 800; // ms between detection frames
+    let lastDetTime = 0;
 
-// ============================================================
-// STATE
-// ============================================================
-let mqttClient = null;
-let currentAsset = null;
-let scanning = false;
-let scanInterval = null;
-let simInterval = null;
-let historyData = [];
-const MAX_HISTORY = 20;
-
-// ============================================================
-// INIT
-// ============================================================
-document.addEventListener('DOMContentLoaded', () => {
-  loadConfig();
-  startCamera();
-  updateConnectionUI();
-  if (CONFIG.simMode) startSimMode();
-});
-
-// ============================================================
-// CAMERA & QR SCANNING
-// ============================================================
-async function startCamera() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+    // ─────────────────────────────────────────────────────────────
+    // BOOT
+    // ─────────────────────────────────────────────────────────────
+    document.addEventListener('DOMContentLoaded', () => {
+      loadCfg();
+      updateConnUI();
+      startCamera();
+      sizeARCanvas();
+      window.addEventListener('resize', sizeARCanvas);
     });
-    const video = document.getElementById('camera');
-    video.srcObject = stream;
-    video.onloadedmetadata = () => { startQRScan(); };
-  } catch (e) {
-    showToast('Camera permission denied. Enable in Settings.', 'error');
-    // Fallback: allow manual QR input
-    setTimeout(() => promptManualQR(), 2000);
-  }
-}
 
-function startQRScan() {
-  if (scanning) return;
-  scanning = true;
-  const video = document.getElementById('camera');
-  const canvas = document.getElementById('scan-canvas');
-  const ctx = canvas.getContext('2d');
-  scanInterval = setInterval(() => {
-    if (currentAsset) return; // Don't scan if asset already loaded
-    if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0);
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
-    if (code) processQRCode(code.data);
-  }, 200);
-}
+    function sizeARCanvas() {
+      const c = document.getElementById('ar-canvas');
+      const v = document.getElementById('cam');
+      c.width = window.innerWidth;
+      c.height = window.innerHeight;
+    }
 
-function processQRCode(data) {
-  // Expected format: ASSET:RACK-01:it/assets/RACK-01/telemetry
-  // Also accept simple: RACK-01
-  let assetId, topic;
-  if (data.startsWith('ASSET:')) {
-    const parts = data.split(':');
-    assetId = parts[1];
-    topic = parts.slice(2).join(':');
-  } else {
-    assetId = data.trim();
-    topic = `it/assets/${assetId}/telemetry`;
-  }
-  if (!assetId) return;
-  loadAsset(assetId, topic);
-}
+    // ─────────────────────────────────────────────────────────────
+    // CAMERA + QR + OBJECT DETECTION
+    // ─────────────────────────────────────────────────────────────
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1920 }, height: { ideal: 1080 }
+          }
+        });
+        const v = document.getElementById('cam');
+        v.srcObject = stream;
+        v.onloadedmetadata = () => {
+          v.play();
+          startQR();
+          loadDetectionModel();
+        };
+      } catch (e) {
+        toast('Camera denied — use Demo or Manual', 'warn');
+      }
+    }
 
-function promptManualQR() {
-  const val = prompt('Enter Asset ID (e.g. RACK-01) or full QR text:');
-  if (val) processQRCode(val);
-}
+    function startQR() {
+      if (scanning) return;
+      scanning = true;
+      const v = document.getElementById('cam');
+      const c = document.getElementById('scan-canvas');
+      const ctx = c.getContext('2d', { willReadFrequently: true });
 
-// ============================================================
-// ASSET LOADING
-// ============================================================
-function loadAsset(assetId, topic) {
-  currentAsset = { id: assetId, topic };
-  historyData = [];
-  document.getElementById('asset-id').textContent = assetId;
-  document.getElementById('scan-prompt').style.display = 'none';
-  document.getElementById('viewfinder').style.display = 'none';
-  document.getElementById('telemetry-card').style.display = 'block';
-  showToast(`Asset ${assetId} identified ✓`, 'success');
+      scanTimer = setInterval(() => {
+        if (v.readyState < 2) return;
+        c.width = v.videoWidth; c.height = v.videoHeight;
+        ctx.drawImage(v, 0, 0);
+        const img = ctx.getImageData(0, 0, c.width, c.height);
+        const qr = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
+        if (qr) { parseQR(qr.data); return; }
 
-  if (CONFIG.simMode) {
-    startSimForAsset(assetId);
-  } else {
-    connectMQTT(topic);
-  }
-}
+        // Object detection (throttled)
+        const now = Date.now();
+        if (now - lastDetTime > DETECT_INTERVAL) {
+          lastDetTime = now;
+          runDetection(v);
+        }
+      }, 300);
+    }
 
-function clearAsset() {
-  currentAsset = null;
-  if (mqttClient) { try { mqttClient.end(); } catch(e) {} mqttClient = null; }
-  if (simInterval) { clearInterval(simInterval); simInterval = null; }
-  document.getElementById('telemetry-card').style.display = 'none';
-  document.getElementById('history-panel').style.display = 'none';
-  document.getElementById('scan-prompt').style.display = 'block';
-  document.getElementById('viewfinder').style.display = 'block';
-  updateConnectionUI();
-}
+    // ─────────────────────────────────────────────────────────────
+    // TENSORFLOW.JS OBJECT DETECTION
+    // ─────────────────────────────────────────────────────────────
+    async function loadDetectionModel() {
+      const strip = document.getElementById('det-strip');
+      strip.style.display = 'block';
+      strip.textContent = '🤖 Loading AI detection...';
+      try {
+        detModel = await cocoSsd.load();
+        strip.textContent = '✅ AI detection ready';
+        setTimeout(() => { strip.style.display = 'none'; }, 2500);
+        detRunning = true;
+      } catch (e) {
+        strip.textContent = '⚠️ AI offline — QR only';
+        setTimeout(() => { strip.style.display = 'none'; }, 4000);
+      }
+    }
 
-// ============================================================
-// SIMULATION MODE
-// ============================================================
-function startSimMode() {
-  document.getElementById('sim-badge').style.display = 'block';
-  document.getElementById('conn-dot').className = 'simulating';
-  document.getElementById('conn-label').textContent = 'Simulation';
-}
+    async function runDetection(videoEl) {
+      if (!detModel || !detRunning || curAsset) return;
+      try {
+        const preds = await detModel.detect(videoEl);
+        drawDetections(preds, videoEl);
+      } catch (e) { /* silent */ }
+    }
 
-function startSimForAsset(assetId) {
-  if (simInterval) clearInterval(simInterval);
-  const update = () => {
-    const temp = (40 + Math.random() * 20).toFixed(1);
-    const load = Math.round(50 + Math.random() * 40);
-    const signal = Math.round(-70 + Math.random() * 20);
-    const uptime = Math.round(1000 + Math.random() * 500);
-    const status = temp > 58 ? 'CRIT' : temp > 52 ? 'WARN' : 'OK';
-    updateTelemetry({ asset_id: assetId, cpu_temp: temp, cpu_load: load, signal_dbm: signal, uptime_hrs: uptime, status, timestamp: new Date().toISOString() });
-  };
-  update();
-  simInterval = setInterval(update, 5000);
-}
+    function drawDetections(preds, videoEl) {
+      const canvas = document.getElementById('ar-canvas');
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-// ============================================================
-// MQTT
-// ============================================================
-function connectMQTT(topic) {
-  if (!CONFIG.mqttUrl) { showToast('Set MQTT broker URL in Settings', 'error'); return; }
-  try {
-    mqttClient = mqtt.connect(CONFIG.mqttUrl, { reconnectPeriod: 5000, connectTimeout: 10000 });
-    mqttClient.on('connect', () => {
-      document.getElementById('conn-dot').className = 'connected';
-      document.getElementById('conn-label').textContent = 'MQTT Live';
-      mqttClient.subscribe(topic);
-      showToast('Connected to MQTT broker', 'success');
-    });
-    mqttClient.on('message', (t, payload) => {
-      try { updateTelemetry(JSON.parse(payload.toString())); } catch(e) {}
-    });
-    mqttClient.on('error', (e) => { showToast('MQTT error: ' + e.message, 'error'); });
-    mqttClient.on('close', () => { document.getElementById('conn-dot').className = ''; document.getElementById('conn-label').textContent = 'Disconnected'; });
-  } catch(e) { showToast('MQTT connect failed', 'error'); }
-}
+      const chips = [];
+      const scaleX = canvas.width / videoEl.videoWidth;
+      const scaleY = canvas.height / videoEl.videoHeight;
 
-// ============================================================
-// TELEMETRY UPDATE
-// ============================================================
-function updateTelemetry(data) {
-  const temp = parseFloat(data.cpu_temp || data.temp || 0);
-  const load = parseInt(data.cpu_load || data.load || 0);
-  const signal = parseInt(data.signal_dbm || data.signal || -75);
-  const uptime = data.uptime_hrs || '--';
-  const status = data.status || (temp > 58 ? 'CRIT' : temp > 52 ? 'WARN' : 'OK');
-  const ts = data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+      // Font sizes — responsive
+      const fontSize = Math.max(12, Math.round(canvas.width * 0.03));
+      ctx.font = `bold ${fontSize}px 'Segoe UI', system-ui, sans-serif`;
 
-  document.getElementById('m-temp').textContent = temp.toFixed(1);
-  document.getElementById('m-load').textContent = load;
-  document.getElementById('m-signal').textContent = signal;
-  document.getElementById('uptime-val').textContent = `${uptime} hrs`;
-  document.getElementById('timestamp-val').textContent = ts;
+      preds.forEach(p => {
+        if (p.score < 0.55) return; // confidence threshold
+        const [bx, by, bw, bh] = p.bbox;
+        const x = bx * scaleX, y = by * scaleY;
+        const w = bw * scaleX, h = bh * scaleY;
+        const label = p.class;
+        const conf = Math.round(p.score * 100);
+        const assetType = OBJ_ASSET_MAP[label.toLowerCase()] || 'DEVICE';
+        const tag = `${assetType.padEnd(8, ' ')} ${conf}%`;
 
-  const statusEl = document.getElementById('asset-status');
-  statusEl.textContent = status;
-  statusEl.className = 'asset-status ' + (status === 'CRIT' ? 'crit' : status === 'WARN' ? 'warn' : 'ok');
+        // Bounding box
+        ctx.strokeStyle = 'rgba(0,212,255,0.8)';
+        ctx.lineWidth = Math.max(2, canvas.width * 0.004);
+        ctx.strokeRect(x, y, w, h);
 
-  // Change temp metric color based on value
-  const tempBox = document.getElementById('m-temp').closest('.metric-box');
-  tempBox.style.setProperty('--metric-color', temp > 58 ? '#ff4444' : temp > 52 ? '#ffaa00' : '#ff6b6b');
+        // Corner accents
+        const cs = Math.min(w, h) * 0.18;
+        ctx.strokeStyle = '#00d4ff';
+        ctx.lineWidth = Math.max(3, canvas.width * 0.006);
+        [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]].forEach(([cx, cy, dx, dy]) => {
+          ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + dx * cs, cy); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx, cy + dy * cs); ctx.stroke();
+        });
 
-  // Store in history
-  historyData.unshift({ ts, temp, load, signal, status });
-  if (historyData.length > MAX_HISTORY) historyData.pop();
-}
+        // Label pill background
+        const tw = ctx.measureText(tag).width;
+        const ph = fontSize + 10, pw = tw + 16;
+        const lx = Math.max(2, Math.min(x, canvas.width - pw - 2));
+        const ly = y > ph + 4 ? y - ph - 4 : y + h + 4;
+        ctx.fillStyle = 'rgba(0,20,30,0.82)';
+        roundRect(ctx, lx, ly, pw, ph, 6);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(0,212,255,0.6)';
+        ctx.lineWidth = 1;
+        roundRect(ctx, lx, ly, pw, ph, 6);
+        ctx.stroke();
+        ctx.fillStyle = '#00d4ff';
+        ctx.fillText(tag, lx + 8, ly + ph - 5);
 
-// ============================================================
-// HISTORY PANEL
-// ============================================================
-function showHistory() {
-  const panel = document.getElementById('history-panel');
-  const rows = document.getElementById('history-rows');
-  if (!historyData.length) { showToast('No history yet', 'info'); return; }
-  rows.innerHTML = historyData.map(h => `
-    <div class="history-row">
-      <span class="hist-time">${h.ts}</span>
-      <span class="hist-val" style="color:#ff6b6b">${parseFloat(h.temp).toFixed(1)}°C</span>
-      <span class="hist-val" style="color:#ffd93d">${h.load}%</span>
-      <span class="hist-val" style="color:#6bcb77">${h.signal}dBm</span>
-      <span class="hist-status ${h.status === 'CRIT' ? 'crit' : h.status === 'WARN' ? 'warn' : 'ok'}"
-            style="background:${h.status==='CRIT'?'rgba(255,68,68,0.15)':h.status==='WARN'?'rgba(255,170,0,0.15)':'rgba(0,204,102,0.15)'}; color:${h.status==='CRIT'?'#ff4444':h.status==='WARN'?'#ffaa00':'#00cc66'}"
-      >${h.status}</span>
+        chips.push(label);
+      });
+
+      // Update chip list
+      const list = document.getElementById('obj-list');
+      if (chips.length > 0 && !curAsset) {
+        list.innerHTML = chips.slice(0, 4).map(c =>
+          `<div class="obj-chip">📦 ${c.toUpperCase()}</div>`).join('');
+      } else if (!curAsset) {
+        list.innerHTML = '';
+      }
+    }
+
+    // Helper — rounded rectangle
+    function roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y); ctx.arcTo(x + w, y, x + w, y + r, r);
+      ctx.lineTo(x + w, y + h - r); ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+      ctx.lineTo(x + r, y + h); ctx.arcTo(x, y + h, x, y + h - r, r);
+      ctx.lineTo(x, y + r); ctx.arcTo(x, y, x + r, y, r);
+      ctx.closePath();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // QR PARSING
+    // ─────────────────────────────────────────────────────────────
+    function parseQR(raw) {
+      let id, topic;
+      if (raw.startsWith('ASSET:')) {
+        const p = raw.split(':'); id = p[1]; topic = p.slice(2).join(':');
+      } else {
+        id = raw.trim().toUpperCase() || 'DEVICE';
+        topic = `it/assets/${id}/telemetry`;
+      }
+      selectAsset(id, topic, 'QR');
+    }
+
+    function manualEntry() {
+      const val = prompt('Enter Asset ID (e.g. RACK-01)\nor full QR: ASSET:RACK-01:it/assets/RACK-01/telemetry');
+      if (val && val.trim()) parseQR(val.trim());
+    }
+
+    function loadDemoAsset() { selectAsset('RACK-01-DEMO', 'it/assets/RACK-01/telemetry', 'DEMO'); }
+
+    // ─────────────────────────────────────────────────────────────
+    // ASSET SELECT / CLEAR
+    // ─────────────────────────────────────────────────────────────
+    function selectAsset(id, topic, src) {
+      curAsset = { id, topic }; history = [];
+      document.getElementById('asset-name').textContent = id;
+      document.getElementById('viewfinder').style.opacity = '0';
+      document.getElementById('scan-hint').style.display = 'none';
+      document.getElementById('demo-btn').style.display = 'none';
+      document.getElementById('obj-list').innerHTML = '';
+      // Clear AR canvas
+      const ac = document.getElementById('ar-canvas');
+      ac.getContext('2d').clearRect(0, 0, ac.width, ac.height);
+      document.getElementById('tcard').style.display = 'block';
+      toast(`${src}: ${id}`, 'ok');
+      if (CFG.sim) startSim(id);
+      else connectMQTT(topic);
+    }
+
+    function clearAsset() {
+      curAsset = null;
+      if (simTimer) { clearInterval(simTimer); simTimer = null; }
+      if (mqttClient) { try { mqttClient.end(); } catch (e) { } mqttClient = null; }
+      document.getElementById('tcard').style.display = 'none';
+      document.getElementById('viewfinder').style.opacity = '1';
+      document.getElementById('scan-hint').style.display = 'block';
+      document.getElementById('demo-btn').style.display = 'block';
+      updateConnUI();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // SIMULATION
+    // ─────────────────────────────────────────────────────────────
+    function startSim(id) {
+      if (simTimer) clearInterval(simTimer);
+      const tick = () => {
+        const temp = +(40 + Math.random() * 22).toFixed(1);
+        const load = Math.round(50 + Math.random() * 42);
+        const uptime = Math.round(1000 + Math.random() * 500);
+        const status = temp > 58 ? 'CRIT' : temp > 52 ? 'WARN' : 'OK';
+        updateTelemetry({ id, temp, load, uptime, status, ts: new Date().toISOString() });
+      };
+      tick(); simTimer = setInterval(tick, 5000);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // MQTT
+    // ─────────────────────────────────────────────────────────────
+    function connectMQTT(topic) {
+      if (!CFG.mqtt) { toast('Set MQTT URL in Settings', 'err'); return; }
+      try {
+        mqttClient = mqtt.connect(CFG.mqtt, { reconnectPeriod: 5000, connectTimeout: 10000 });
+        mqttClient.on('connect', () => {
+          document.getElementById('conn-dot').className = 'live';
+          document.getElementById('conn-label').textContent = 'MQTT Live';
+          mqttClient.subscribe(topic); toast('MQTT connected', 'ok');
+        });
+        mqttClient.on('message', (_t, buf) => {
+          try {
+            const d = JSON.parse(buf.toString());
+            updateTelemetry({ id: d.asset_id || curAsset.id, temp: +d.cpu_temp || 0, load: +d.cpu_load || 0, uptime: d.uptime_hrs || 0, status: d.status || 'OK', ts: d.timestamp || new Date().toISOString() });
+          } catch (e) { }
+        });
+        mqttClient.on('error', e => toast('MQTT: ' + e.message, 'err'));
+        mqttClient.on('close', () => { document.getElementById('conn-dot').className = ''; document.getElementById('conn-label').textContent = 'Disconnected'; });
+      } catch (e) { toast('MQTT failed', 'err'); }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // TELEMETRY UPDATE
+    // ─────────────────────────────────────────────────────────────
+    function updateTelemetry(d) {
+      const { temp, load, uptime, status, ts } = d;
+      document.getElementById('m-temp').textContent = (+temp).toFixed(1);
+      document.getElementById('m-load').textContent = load;
+      document.getElementById('m-uptime').textContent = uptime;
+      document.getElementById('ts-val').textContent = new Date(ts).toLocaleTimeString();
+      const badge = document.getElementById('asset-badge');
+      badge.textContent = status;
+      badge.className = 'asset-badge ' + (status === 'CRIT' ? 'crit' : status === 'WARN' ? 'warn' : 'ok');
+      // temp color
+      document.getElementById('m-temp').closest('.metric').style.setProperty('--mc', +temp > 58 ? '#ff4444' : +temp > 52 ? '#ffaa00' : '#ff6b6b');
+      // history
+      history.unshift({ ts: new Date(ts).toLocaleTimeString(), temp: +temp, load, uptime, status });
+      if (history.length > 20) history.pop();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // HISTORY
+    // ─────────────────────────────────────────────────────────────
+    function showHistory() {
+      if (!history.length) { toast('No data yet', 'info'); return; }
+      document.getElementById('hist-rows').innerHTML = history.map(h => `
+    <div class="hrow">
+      <span class="htime">${h.ts}</span>
+      <span class="hval" style="color:#ff6b6b">${h.temp}°C</span>
+      <span class="hval" style="color:#ffd93d">${h.load}%</span>
+      <span class="hval" style="color:#6bcb77">${h.uptime}h</span>
+      <span class="hbadge" style="background:${h.status === 'CRIT' ? 'rgba(255,68,68,.15)' : h.status === 'WARN' ? 'rgba(255,170,0,.15)' : 'rgba(0,204,102,.15)'};color:${h.status === 'CRIT' ? '#ff4444' : h.status === 'WARN' ? '#ffaa00' : '#00cc66'}">${h.status}</span>
     </div>`).join('');
-  panel.style.display = 'block';
-}
+    }
 
-function closeHistory() { document.getElementById('history-panel').style.display = 'none'; }
+    // ─────────────────────────────────────────────────────────────
+    // PANELS
+    // ─────────────────────────────────────────────────────────────
+    function showPanel(id) {
+      if (id === 'history') showHistory();
+      if (id === 'settings') populateSettings();
+      document.getElementById(`panel-${id}`).classList.add('open');
+    }
+    function closePanel(id) { document.getElementById(`panel-${id}`).classList.remove('open'); }
+    function handleBdrop(e, id) { if (e.target === e.currentTarget) closePanel(id); }
 
-// ============================================================
-// SERVICENOW TICKET
-// ============================================================
-async function createTicket() {
-  if (!currentAsset) return;
-  const temp = document.getElementById('m-temp').textContent;
-  const load = document.getElementById('m-load').textContent;
-  const status = document.getElementById('asset-status').textContent;
+    function populateSettings() {
+      document.getElementById('f-mqtt').value = CFG.mqtt;
+      document.getElementById('f-snow').value = CFG.snow;
+      document.getElementById('f-user').value = CFG.user;
+      document.getElementById('f-pass').value = CFG.pass;
+      const t = document.getElementById('sim-t');
+      t.className = 'toggle' + (CFG.sim ? ' on' : '');
+      document.getElementById('mqtt-section').style.opacity = CFG.sim ? '.35' : '1';
+    }
 
-  if (!CONFIG.snowUrl) {
-    showToast('ServiceNow URL not configured. Opening demo...', 'info');
-    setTimeout(() => {
-      alert(`DEMO — Work Order Created:\n\nAsset: ${currentAsset.id}\nTemp: ${temp}°C  Load: ${load}%\nStatus: ${status}\n\nIn production, this creates:\nINCIDENT in ServiceNow via REST API`);
-    }, 500);
-    return;
-  }
+    function saveSettings() {
+      CFG.sim = document.getElementById('sim-t').classList.contains('on');
+      CFG.mqtt = document.getElementById('f-mqtt').value.trim();
+      CFG.snow = document.getElementById('f-snow').value.trim();
+      CFG.user = document.getElementById('f-user').value.trim() || 'admin';
+      CFG.pass = document.getElementById('f-pass').value;
+      try { localStorage.setItem('ar_cfg', JSON.stringify(CFG)); } catch (e) { }
+      closePanel('settings');
+      updateConnUI();
+      toast('Settings saved ✓', 'ok');
+    }
 
-  const body = {
-    short_description: `AR Alert: ${currentAsset.id} — ${status}`,
-    description: `Asset: ${currentAsset.id} | Temp: ${temp}°C | Load: ${load}% | Status: ${status}`,
-    category: 'hardware',
-    urgency: status === 'CRIT' ? '1' : status === 'WARN' ? '2' : '3'
-  };
+    function loadCfg() {
+      try { Object.assign(CFG, JSON.parse(localStorage.getItem('ar_cfg') || '{}')); } catch (e) { }
+    }
 
-  try {
-    showToast('Creating ticket...', 'info');
-    const resp = await fetch(`${CONFIG.snowUrl}/api/now/table/incident`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Basic ' + btoa(`${CONFIG.snowUser}:${CONFIG.snowPass}`)
-      },
-      body: JSON.stringify(body)
-    });
-    const json = await resp.json();
-    const incNum = json.result?.number || 'Created';
-    showToast(`Ticket ${incNum} created ✓`, 'success');
-  } catch(e) {
-    showToast('Ticket creation failed: ' + e.message, 'error');
-  }
-}
+    function updateConnUI() {
+      const dot = document.getElementById('conn-dot'), lbl = document.getElementById('conn-label');
+      if (CFG.sim) { dot.className = 'sim'; lbl.textContent = 'Sim Mode'; }
+      else if (mqttClient?.connected) { dot.className = 'live'; lbl.textContent = 'MQTT Live'; }
+      else { dot.className = ''; lbl.textContent = 'Disconnected'; }
+    }
 
-// ============================================================
-// SETUP PANEL
-// ============================================================
-function toggleSetup() {
-  const p = document.getElementById('setup-panel');
-  p.style.display = p.style.display === 'block' ? 'none' : 'block';
-  if (p.style.display === 'block') {
-    document.getElementById('mqtt-url').value = CONFIG.mqttUrl;
-    document.getElementById('snow-url').value = CONFIG.snowUrl;
-    document.getElementById('snow-user').value = CONFIG.snowUser;
-    document.getElementById('snow-pass').value = CONFIG.snowPass;
-    const toggle = document.getElementById('sim-toggle');
-    toggle.className = 'toggle-switch' + (CONFIG.simMode ? ' on' : '');
-  }
-}
+    // ─────────────────────────────────────────────────────────────
+    // SERVICENOW
+    // ─────────────────────────────────────────────────────────────
+    async function createTicket() {
+      if (!curAsset) return;
+      const temp = document.getElementById('m-temp').textContent;
+      const load = document.getElementById('m-load').textContent;
+      const status = document.getElementById('asset-badge').textContent;
+      if (!CFG.snow) {
+        toast('ServiceNow not configured', 'info');
+        setTimeout(() => alert(`📋 DEMO TICKET\n\nAsset: ${curAsset.id}\nTemp: ${temp}°C | Load: ${load}%\nStatus: ${status}\n\n(Configure ServiceNow URL in Settings to create real tickets)`), 200);
+        return;
+      }
+      toast('Creating ticket...', 'info');
+      try {
+        const r = await fetch(`${CFG.snow}/api/now/table/incident`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + btoa(`${CFG.user}:${CFG.pass}`) },
+          body: JSON.stringify({ short_description: `AR Alert: ${curAsset.id} — ${status}`, description: `Asset: ${curAsset.id} | Temp: ${temp}°C | Load: ${load}% | Status: ${status}`, category: 'hardware', urgency: status === 'CRIT' ? '1' : status === 'WARN' ? '2' : '3' })
+        });
+        const j = await r.json();
+        toast(`Ticket ${j.result?.number || 'created'} ✓`, 'ok');
+      } catch (e) { toast('Ticket failed: ' + e.message, 'err'); }
+    }
 
-function closeSetup() { document.getElementById('setup-panel').style.display = 'none'; }
-
-function toggleSim() {
-  const t = document.getElementById('sim-toggle');
-  t.classList.toggle('on');
-  document.getElementById('mqtt-field').style.opacity = t.classList.contains('on') ? '0.4' : '1';
-}
-
-function saveConfig() {
-  const simOn = document.getElementById('sim-toggle').classList.contains('on');
-  CONFIG.simMode = simOn;
-  CONFIG.mqttUrl = document.getElementById('mqtt-url').value.trim();
-  CONFIG.snowUrl = document.getElementById('snow-url').value.trim();
-  CONFIG.snowUser = document.getElementById('snow-user').value.trim();
-  CONFIG.snowPass = document.getElementById('snow-pass').value;
-  localStorage.setItem('ar_config', JSON.stringify(CONFIG));
-  closeSetup();
-  updateConnectionUI();
-  if (simOn) startSimMode();
-  else { document.getElementById('sim-badge').style.display = 'none'; }
-  showToast('Config saved', 'success');
-}
-
-function loadConfig() {
-  try {
-    const saved = JSON.parse(localStorage.getItem('ar_config') || '{}');
-    Object.assign(CONFIG, saved);
-  } catch(e) {}
-}
-
-function updateConnectionUI() {
-  const dot = document.getElementById('conn-dot');
-  const label = document.getElementById('conn-label');
-  const simBadge = document.getElementById('sim-badge');
-  if (CONFIG.simMode) {
-    dot.className = 'simulating';
-    label.textContent = 'Simulation';
-    simBadge.style.display = 'block';
-  } else if (mqttClient && mqttClient.connected) {
-    dot.className = 'connected';
-    label.textContent = 'MQTT Live';
-    simBadge.style.display = 'none';
-  } else {
-    dot.className = '';
-    label.textContent = 'Disconnected';
-    simBadge.style.display = 'none';
-  }
-}
-
-// ============================================================
-// TOAST
-// ============================================================
-let toastTimer;
-function showToast(msg, type = 'success') {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = type === 'error' ? 'error' : type === 'info' ? 'info' : '';
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.classList.add('hidden'); }, 3000);
-}
-</script>
+    // ─────────────────────────────────────────────────────────────
+    // TOAST
+    // ─────────────────────────────────────────────────────────────
+    let toastT;
+    function toast(msg, type = 'ok') {
+      const el = document.getElementById('toast');
+      el.textContent = msg; el.className = `show ${type}`;
+      clearTimeout(toastT); toastT = setTimeout(() => el.className = '', 3000);
+    }
+  </script>
 </body>
+
 </html>
