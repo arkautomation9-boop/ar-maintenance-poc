@@ -1195,9 +1195,9 @@
             updateTelemetry({ id: d.asset_id || curAsset.id, temp: +d.cpu_temp || 0, load: +d.cpu_load || 0, uptime: d.uptime_hrs || 0, status: d.status || 'OK', ts: d.timestamp || new Date().toISOString() });
           } catch (e) { }
         });
-        mqttClient.on('error', e => toast('MQTT: ' + e.message, 'err'));
+        mqttClient.on('error', e => toast('MQTT Error: ' + (e ? (e.message || 'Connection failed') : 'Unknown'), 'err'));
         mqttClient.on('close', () => { document.getElementById('conn-dot').className = ''; document.getElementById('conn-label').textContent = 'Disconnected'; });
-      } catch (e) { toast('MQTT failed', 'err'); }
+      } catch (e) { toast('MQTT failed: ' + (e.message || e), 'err'); }
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -1263,7 +1263,22 @@
       CFG.pass = document.getElementById('f-pass').value;
       try { localStorage.setItem('ar_cfg', JSON.stringify(CFG)); } catch (e) { }
       closePanel('settings');
-      updateConnUI();
+
+      if (curAsset) {
+        if (simTimer) { clearInterval(simTimer); simTimer = null; }
+        if (mqttClient) { try { mqttClient.end(); } catch (e) { } mqttClient = null; }
+
+        if (CFG.sim) {
+          startSim(curAsset.id);
+        } else {
+          document.getElementById('conn-dot').className = '';
+          document.getElementById('conn-label').textContent = 'Connecting...';
+          connectMQTT(curAsset.topic);
+        }
+      } else {
+        updateConnUI();
+      }
+
       toast('Settings saved ✓', 'ok');
     }
 

@@ -4,7 +4,8 @@
     "webDir": "www",
     "bundledWebRuntime": false,
     "server": {
-        "androidScheme": "https"
+        "androidScheme": "http",
+        "cleartext": true
     },
     "plugins": {
         "Camera": {
@@ -12,8 +13,8 @@
         }
     },
     "android": {
-        "allowMixedContent": false,
+        "allowMixedContent": true,
         "captureInput": true,
-        "webContentsDebuggingEnabled": false
+        "webContentsDebuggingEnabled": true
     }
 }
